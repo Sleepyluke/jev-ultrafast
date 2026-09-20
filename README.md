@@ -2,9 +2,9 @@
 
 # Jev Ultrafast ⚡
 
-This is the Sweeps development fork. Its first addition is
-[explicit browser context binding](docs/context-binding.md) for caller-provisioned
-sessions. Upstream demos remain available; live fleet integration is still in
+This is the Sweeps development fork. It adds
+[explicit browser context binding and temporary context provisioning](docs/context-binding.md).
+Upstream demos remain available; live fleet integration is still in
 development. The performance measurements below are the upstream results.
 
 > [!IMPORTANT]

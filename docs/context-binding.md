@@ -1,7 +1,7 @@
 # Explicit browser context binding
 
-This fork adds a first session-isolation building block for Sweeps. A trusted
-caller can bind an agent to an existing nondefault CDP browser context:
+This fork adds session-isolation building blocks for Sweeps. A trusted caller
+can bind an agent to an existing nondefault CDP browser context:
 
 ```python
 from jev_ultrafast import Agent
@@ -42,17 +42,67 @@ default context. **Do not use that default for multi-member fleet jobs.** The
 trusted Sweeps adapter must require an assigned context and authorize the
 member/account mapping. This option is not authentication or authorization.
 
-The caller provisions and owns the context. This change does not implement
-persistent Chrome profiles, session enrollment, cookie persistence, or member
-ownership verification. Context lifetime and credential provisioning are next
-integration steps. Context IDs are passed in code, outside the natural-language
+The caller owns the context. `IsolatedContext`, described below, can provision a
+temporary context. Persistent Chrome profiles, session enrollment, persistence
+across context disposal, and member ownership verification are not implemented.
+Context IDs are passed in code, outside the natural-language
 goal; do not put member credentials or profile details into model context.
 
 The upstream performance measurements describe unscoped operation. Scoped mode
 adds CDP verification calls and has not been benchmarked on live Sweeps runners.
 Tests cover mocked browser decisions, the actual pinned harness routing bug,
 and scoped Browser initialization/input/cleanup through a real local WebSocket
-server with synthetic CDP replies. They make no paid model calls and do not open
-a browser. Real Chrome and fleet validation remain pending.
-Run `uv run python -m pytest -q` for the complete offline suite.
+server with synthetic CDP replies. The default suite makes no paid model calls
+and does not open a browser. Run `uv run python -m pytest -q`; the two opt-in
+Chrome tests are skipped unless configured as below.
 An agent's DONE state still needs independent outcome verification.
+
+## Provision an owned temporary context
+
+```python
+from jev_ultrafast import Agent, IsolatedContext
+
+# The runner supplies an existing browser's WebSocket endpoint.
+with IsolatedContext(browser_endpoint) as context:
+    with Agent(
+        "https://example.test/offers",
+        "Read the current offer terms.",
+        **context.browser_options,
+    ) as agent:
+        for state in agent.run():
+            print(state["status"])
+```
+
+Each scope creates one new context on a dedicated connection, with
+`disposeOnDetach=True`. Keep that connection alive for the entire job. Closing
+the scope disposes only its created context and its tabs; closing an individual
+Browser closes only that tab. A dropped creator connection lets Chrome reclaim
+the context, including when a create reply was lost. Creation/disposal is never
+retried. Cleanup failure is reported without replacing an existing job error.
+Do not pass another person's context to this helper; it accepts only an endpoint
+and creates its own. The trusted runner still controls job/member authorization.
+
+Cookies and local storage survive tab replacement within the live context, but
+**are destroyed when the context is disposed**. This is useful for disposable
+workflows, not persistent daily logins. Browser launch, managed profile storage,
+runner assignment and credential entry remain separate integration work.
+
+## Real Chrome validation
+
+Opt-in tests launch a fresh headless Chrome process with a unique disposable
+profile and random debug port. They serve a synthetic page on loopback, exercise
+cookies/local storage and observed input, reject a wrong-context session, check
+tab replacement, and verify both explicit disposal and creator-detach cleanup.
+They never attach to an existing profile or call a model or collection site.
+
+PowerShell example (use a fresh basetemp path for each run):
+
+```powershell
+New-Item -ItemType Directory -Path .scratch -Force | Out-Null
+$env:JEV_TEST_CHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+uv run python -m pytest tests/test_context_chrome.py -q -s --basetemp=.scratch/chrome-proof-run-1
+```
+
+Both tests passed on Windows with Chrome `153.0.8010.48` on 2026-09-20. This is
+local, synthetic real-browser evidence. It does not prove remote fleet rollout,
+persistent profile isolation, member authorization or live collection success.
