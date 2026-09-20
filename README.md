@@ -2,6 +2,11 @@
 
 # Jev Ultrafast ⚡
 
+This is the Sweeps development fork. Its first addition is
+[explicit browser context binding](docs/context-binding.md) for caller-provisioned
+sessions. Upstream demos remain available; live fleet integration is still in
+development. The performance measurements below are the upstream results.
+
 > [!IMPORTANT]
 > **The Browser Use Cloud waitlist is open.** Get early access to ultrafast browser agents in the cloud.
 > **[Join the waitlist →](https://browser-use.com/ultrafast?utm_source=github&utm_medium=readme&utm_campaign=jev-ultrafast)**

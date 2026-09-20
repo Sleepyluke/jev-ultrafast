@@ -10,13 +10,15 @@ from .questions import MAX_STEPS
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False,
+                 browser_context_id=None, browser_ws_url=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
-        self.browser = Browser(url)
+        self.browser = (Browser(url) if browser_context_id is None and browser_ws_url is None
+                        else Browser(url, browser_context_id=browser_context_id, browser_ws_url=browser_ws_url))
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
         try:
