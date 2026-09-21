@@ -5,20 +5,24 @@ import time
 from pathlib import Path
 
 from .browser import Browser, StalePage
-from .model import action_space, choose, field_context, field_text
+from .model import action_space, choose, field_context, field_text, prediction_cost_bound_usd
 from .questions import MAX_STEPS
 
 
 class Agent:
     def __init__(self, url, goals, *, record_dir=None, screenshots=False,
-                 browser_context_id=None, browser_ws_url=None, bind_default_context=False):
+                 browser_context_id=None, browser_ws_url=None, bind_default_context=False,
+                 provider_attempts=3):
         if type(bind_default_context) is not bool:
             raise ValueError("bind_default_context must be a bool")
+        if type(provider_attempts) is not int or not 1 <= provider_attempts <= 3:
+            raise ValueError("provider_attempts must be between 1 and 3")
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
+        self.provider_attempts = provider_attempts
         if browser_context_id is None and browser_ws_url is None and not bind_default_context:
             self.browser = Browser(url)
         elif bind_default_context:
@@ -64,6 +68,21 @@ class Agent:
             "elements": action_space(self.state["page"]["actions"])[0],
         }
 
+    def predict_cost_bound_usd(self):
+        """Return a conservative upper cost bound for the next Jev prediction."""
+        state = self.state
+        return prediction_cost_bound_usd(state["page"], state["goal"], state["history"])
+
+    def prepare_prediction(self):
+        """Refresh once, then freeze the page fingerprint and request cost bound."""
+        state = self.state
+        if not state["browser"].fresh(state["page"]):
+            state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        return {
+            "fingerprint": state["page"]["fingerprint"],
+            "cost_bound_usd": self.predict_cost_bound_usd(),
+        }
+
     def command(self, name, body=None):
         body = body or {}
         state = self.state
@@ -82,14 +101,21 @@ class Agent:
                 raise ValueError("Start a demo first")
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
-            if not state["browser"].fresh(state["page"]):
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            prepared = body.get("prepared_fingerprint")
+            if prepared is None:
+                if not state["browser"].fresh(state["page"]):
+                    state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            elif (not isinstance(prepared, str) or prepared != state["page"]["fingerprint"]
+                  or not state["browser"].fresh(state["page"])):
+                raise StalePage("Prepared page changed before prediction")
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            state["decision"] = choose(
+                state["page"], state["goal"], state["history"], attempts=self.provider_attempts
+            )
             state["decisions"].append(
                 {
                     **state["decision"],

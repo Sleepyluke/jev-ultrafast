@@ -10,15 +10,24 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+HOSTED_URL = "https://jevtypesafeai.com/api/v1/decide"
+OFFICIAL_URL = "https://api.typesafe.ai/v1/systemone"
+# Highest currently supported Jev input rate. Output is free. The byte count is
+# an upper bound on tokenizer tokens; the extra allowance covers provider framing.
+MAX_INPUT_USD_PER_MILLION = 0.42
+PROVIDER_FRAMING_TOKENS = 4096
+COST_BOUND_MARGIN = 1.25
 
 
-def post_json(url, key, body):
-    for attempt in range(3):
+def post_json(url, key, body, *, attempts=3):
+    if type(attempts) is not int or not 1 <= attempts <= 3:
+        raise ValueError("Provider attempts must be between 1 and 3")
+    for attempt in range(attempts):
         try:
             response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
         except httpx.HTTPError:
             raise RuntimeError("Model connection failed; no action executed.") from None
-        if response.status_code in {429, 529, 503} and attempt < 2:
+        if response.status_code in {429, 529, 503} and attempt < attempts - 1:
             time.sleep(0.5 * 2**attempt)
             continue
         if response.is_error:
@@ -78,7 +87,7 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history):
+def choice_request(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -115,8 +124,29 @@ def choose(state, goal, history):
         },
         "questions": questions,
     }
+    return body, operations, targets, controls
+
+
+def prediction_cost_bound_usd(state, goal, history):
+    """Conservative hosted/direct Jev input-cost ceiling for one choice call."""
+    body, *_ = choice_request(state, goal, history)
+    request_bytes = len(json.dumps(body, ensure_ascii=True, separators=(",", ":")).encode("utf-8"))
+    token_bound = request_bytes + PROVIDER_FRAMING_TOKENS
+    return token_bound * MAX_INPUT_USD_PER_MILLION / 1_000_000 * COST_BOUND_MARGIN
+
+
+def _jev_provider():
+    hosted_key = os.environ.get("JEV_API_KEY", "").strip()
+    if hosted_key:
+        return HOSTED_URL, hosted_key
+    return OFFICIAL_URL, os.environ["TYPESAFE_API_KEY"]
+
+
+def choose(state, goal, history, *, attempts=3):
+    body, operations, targets, controls = choice_request(state, goal, history)
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    url, key = _jev_provider()
+    result = post_json(url, key, body, attempts=attempts)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None

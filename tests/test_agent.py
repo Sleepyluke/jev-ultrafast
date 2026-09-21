@@ -77,7 +77,7 @@ def test_one_index_per_node_with_operation_specific_targets():
 def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     calls = []
 
-    def post(_url, _key, body):
+    def post(_url, _key, body, **_kwargs):
         calls.append(body)
         return {
             "model": "test",
@@ -96,8 +96,44 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     assert set(calls[0]["questions"]) == {"operation", "click_target", "type_text_target"}
 
 
+def test_hosted_key_selects_hosted_endpoint_and_cost_bound_covers_reported_use(monkeypatch):
+    seen = []
+
+    def post(url, key, body, **_kwargs):
+        seen.append((url, key, body))
+        return {
+            "model": "test",
+            "usage": {"input_tokens": 1000, "cost_usd": 0.00042},
+            "answers": {
+                "operation": choice(body["questions"]["operation"]["criteria"], "DONE"),
+            },
+        }
+
+    monkeypatch.setenv("JEV_API_KEY", "hosted-test")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(model, "post_json", post)
+    bound = model.prediction_cost_bound_usd(page(), "Find a book", [])
+    result = model.choose(page(), "Find a book", [])
+    assert seen[0][0] == model.HOSTED_URL and seen[0][1] == "hosted-test"
+    assert bound >= result["usage"]["cost_usd"]
+
+
+def test_prepared_prediction_rejects_stale_page_without_refresh_or_model_call(monkeypatch, runner):
+    runner.state["status"] = "ready"
+    runner.state["decision"] = None
+    runner.state["browser"].fresh.return_value = True
+    prepared = runner.prepare_prediction()
+    runner.state["browser"].fresh.return_value = False
+    choose = Mock()
+    monkeypatch.setattr(loop, "choose", choose)
+    with pytest.raises(StalePage, match="Prepared page changed"):
+        runner.command("predict", {"prepared_fingerprint": prepared["fingerprint"]})
+    choose.assert_not_called()
+    runner.state["browser"].observe.assert_not_called()
+
+
 def test_click_cannot_consume_a_text_target(monkeypatch):
-    def post(_url, _key, body):
+    def post(_url, _key, body, **_kwargs):
         return {
             "model": "test",
             "answers": {
@@ -120,7 +156,7 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
         "role": "checkbox", "checked": "true", "selected": False,
     })
 
-    def post(_url, _key, body):
+    def post(_url, _key, body, **_kwargs):
         questions = body["questions"]
         target = questions["click_target"]
         assert target["criteria"]["1"]["checked"] == "true"
@@ -162,6 +198,7 @@ def runner():
     a = loop.Agent.__new__(loop.Agent)
     a.screenshots = False
     a.pending_text = None
+    a.provider_attempts = 3
     p = page()
     a.state = {
         "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),

@@ -62,7 +62,7 @@ git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast
 uv sync
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
+# Add TYPESAFE_API_KEY (or hosted JEV_API_KEY) and TEXT_MODEL_API_KEY.
 uv run jev
 ```
 
@@ -99,6 +99,15 @@ the default context of a trusted persistent browser profile. See
 [Explicit browser context binding](docs/context-binding.md). These checks bind
 browser traffic; account authorization and outcome verification remain the
 calling application's responsibility.
+
+`JEV_API_KEY` selects the hosted `jevtypesafeai.com/api/v1/decide` endpoint;
+otherwise the library uses the official endpoint and `TYPESAFE_API_KEY`. A
+budgeted caller can call `agent.prepare_prediction()` to refresh once and get
+the exact page fingerprint plus a conservative input-cost bound. It must pass
+that fingerprint back as `prepared_fingerprint` to `command("predict", ...)`;
+the command rejects a stale page instead of silently repricing or sending it.
+Set `provider_attempts=1` for a caller that reserves one provider request at a
+time. The default remains three transient-error attempts for existing demos.
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
