@@ -37,14 +37,44 @@ disposes the caller's browser context. Transport errors permanently close the
 connection; no reconnection or mutation retry is attempted. If the connection
 breaks after tab creation, runner cleanup must reconcile the orphaned tab.
 
-Omitting both options preserves upstream demo behavior in the attached browser's
-default context. **Do not use that default for multi-member fleet jobs.** The
-trusted Sweeps adapter must require an assigned context and authorize the
-member/account mapping. This option is not authentication or authorization.
+Omitting both options preserves upstream demo behavior through Browser Harness.
+That unverified mode is intended for the upstream demonstration, not multi-member
+fleet jobs. The trusted Sweeps adapter must authorize the member/account mapping.
+
+## Bind a managed persistent profile
+
+Daily jobs need cookies and local storage to survive after the agent closes its
+tab. A runner can launch one dedicated Chrome/Edge process with a durable
+`user-data-dir`, resolve its trusted browser WebSocket endpoint, and bind the
+agent to that process's default context:
+
+```python
+with Agent(
+    "https://example.test/offers",
+    "Open the daily offer and stop when its terms are visible.",
+    browser_ws_url=assigned_profile_endpoint,
+    bind_default_context=True,
+) as agent:
+    for state in agent.run():
+        print(state["status"])
+```
+
+Checked default mode bypasses Browser Harness and uses a dedicated CDP
+connection. It creates a tab without a context override, confirms Chrome's
+reported context is not one of its nondefault contexts, and pins every later
+read and input to the exact target, session and context ID. A mismatched target
+or session stops before input and is never retried. Closing the agent closes
+only its tab; it does not close the browser or erase the profile state.
+
+The endpoint is trusted configuration. This check cannot identify a member or
+prove which `user-data-dir` Chrome was launched with. The runner must map the
+authorized account assignment to a dedicated endpoint and prevent untrusted
+input or model output from selecting it. A shared default profile is not an
+account-isolation boundary.
 
 The caller owns the context. `IsolatedContext`, described below, can provision a
-temporary context. Persistent Chrome profiles, session enrollment, persistence
-across context disposal, and member ownership verification are not implemented.
+temporary context. Managed profile launch, session enrollment and member ownership
+verification remain caller responsibilities.
 Context IDs are passed in code, outside the natural-language
 goal; do not put member credentials or profile details into model context.
 
@@ -53,7 +83,7 @@ adds CDP verification calls and has not been benchmarked on live Sweeps runners.
 Tests cover mocked browser decisions, the actual pinned harness routing bug,
 and scoped Browser initialization/input/cleanup through a real local WebSocket
 server with synthetic CDP replies. The default suite makes no paid model calls
-and does not open a browser. Run `uv run python -m pytest -q`; the two opt-in
+and does not open a browser. Run `uv run python -m pytest -q`; the three opt-in
 Chrome tests are skipped unless configured as below.
 An agent's DONE state still needs independent outcome verification.
 
@@ -91,9 +121,10 @@ runner assignment and credential entry remain separate integration work.
 
 Opt-in tests launch a fresh headless Chrome process with a unique disposable
 profile and random debug port. They serve a synthetic page on loopback, exercise
-cookies/local storage and observed input, reject a wrong-context session, check
-tab replacement, and verify both explicit disposal and creator-detach cleanup.
-They never attach to an existing profile or call a model or collection site.
+cookies/local storage and observed input, reject wrong-context sessions, check
+state across checked-default tab replacement, and verify both explicit disposal
+and creator-detach cleanup. They never attach to an existing user profile or call
+a model or collection site.
 
 PowerShell example (use a fresh basetemp path for each run):
 
@@ -103,6 +134,7 @@ $env:JEV_TEST_CHROME = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 uv run python -m pytest tests/test_context_chrome.py -q -s --basetemp=.scratch/chrome-proof-run-1
 ```
 
-Both tests passed on Windows with Chrome `153.0.8010.48` on 2026-09-20. This is
-local, synthetic real-browser evidence. It does not prove remote fleet rollout,
-persistent profile isolation, member authorization or live collection success.
+All three tests passed on Windows with Chrome `153.0.8010.48` on 2026-09-20. This
+is local, synthetic real-browser evidence. It proves the checked default context
+retains storage across owned-tab replacement; it does not prove remote fleet
+rollout, member authorization or live collection success.

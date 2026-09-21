@@ -24,28 +24,39 @@ class BrowserBindingError(RuntimeError):
 
 
 class Browser:
-    def __init__(self, url, *, browser_context_id=None, browser_ws_url=None):
+    def __init__(self, url, *, browser_context_id=None, browser_ws_url=None, bind_default_context=False):
+        if type(bind_default_context) is not bool:
+            raise ValueError("bind_default_context must be a bool")
         if browser_context_id is not None:
             if (not isinstance(browser_context_id, str) or not browser_context_id.strip()
                     or browser_context_id != browser_context_id.strip()):
                 raise ValueError("browser_context_id must be a non-blank string with no leading/trailing whitespace")
-        if (browser_context_id is None) != (browser_ws_url is None):
+        if bind_default_context and (browser_context_id is not None or browser_ws_url is None):
+            raise ValueError("Checked default context requires only browser_ws_url")
+        if not bind_default_context and (browser_context_id is None) != (browser_ws_url is None):
             raise ValueError("Supply both browser_context_id and browser_ws_url for scoped mode")
         self._transport = None
-        if browser_context_id is None:
+        if browser_context_id is None and not bind_default_context:
             ensure_daemon()
         else:
             self._transport = DirectCDP(browser_ws_url)
         self._closed = False
         self.browser_context_id = browser_context_id
+        self.bind_default_context = bind_default_context
+        self._bound_context_id = browser_context_id
         self.target = None
         self.session = None
         self.after_input = None
         try:
-            if self.browser_context_id is not None:
+            nondefault_contexts = None
+            if self.browser_context_id is not None or self.bind_default_context:
                 response = self._cdp("Target.getBrowserContexts")
-                contexts = response.get("browserContextIds", [])
-                if not isinstance(contexts, list) or self.browser_context_id not in contexts:
+                contexts = response.get("browserContextIds")
+                if (not isinstance(contexts, list) or
+                        any(not isinstance(item, str) or not item or item != item.strip() for item in contexts)):
+                    raise RuntimeError("Browser contexts unavailable")
+                nondefault_contexts = set(contexts)
+                if self.browser_context_id is not None and self.browser_context_id not in nondefault_contexts:
                     raise RuntimeError("Unknown browser context")
             create_params = {"url": "about:blank", "background": True}
             if self.browser_context_id is not None:
@@ -54,12 +65,22 @@ class Browser:
             if not isinstance(target, str) or not target.strip():
                 raise BrowserBindingError("Target creation was not confirmed")
             self.target = target
-            if self.browser_context_id is not None:
+            if self.browser_context_id is not None or self.bind_default_context:
                 target_info = self._cdp("Target.getTargetInfo", targetId=self.target).get("targetInfo")
                 if (not isinstance(target_info, dict) or target_info.get("targetId") != self.target or
-                    target_info.get("type") != "page" or
-                    target_info.get("browserContextId") != self.browser_context_id):
+                    target_info.get("type") != "page"):
                     raise BrowserBindingError("Target verification failed")
+                reported_context = target_info.get("browserContextId")
+                if (not isinstance(reported_context, str) or not reported_context or
+                        reported_context != reported_context.strip()):
+                    raise BrowserBindingError("Target verification failed")
+                if self.browser_context_id is not None:
+                    if reported_context != self.browser_context_id:
+                        raise BrowserBindingError("Target verification failed")
+                elif reported_context in nondefault_contexts:
+                    raise BrowserBindingError("Target verification failed")
+                else:
+                    self._bound_context_id = reported_context
             session = self._cdp("Target.attachToTarget", targetId=self.target, flatten=True).get("sessionId")
             if not isinstance(session, str) or not session.strip():
                 raise BrowserBindingError("Session attachment was not confirmed")
@@ -87,6 +108,7 @@ class Browser:
             finally:
                 self.target = None
         self.session = None
+        self._bound_context_id = None
         self._closed = True
         if self._transport is not None:
             self._transport.close()
@@ -97,8 +119,9 @@ class Browser:
         return cdp(method, session_id=session_id, **params)
 
     def _verify_session(self):
-        """Verify attached session matches expected target and context (if scoped)."""
-        if getattr(self, "browser_context_id", None) is None:
+        """Verify attached session matches the expected target and bound context."""
+        if (getattr(self, "browser_context_id", None) is None and
+                not getattr(self, "bind_default_context", False)):
             # Unscoped legacy Browser instances never need target/session verification.
             return
         if self.session is None:
@@ -107,8 +130,10 @@ class Browser:
             info = self._cdp("Target.getTargetInfo", session_id=self.session).get("targetInfo")
         except Exception:
             raise BrowserBindingError("Session verification failed") from None
-        if (not isinstance(info, dict) or info.get("targetId") != self.target or
-            info.get("type") != "page" or info.get("browserContextId") != self.browser_context_id):
+        if not isinstance(info, dict) or info.get("targetId") != self.target or info.get("type") != "page":
+            raise BrowserBindingError("Session verification failed")
+        reported_context = info.get("browserContextId")
+        if reported_context != self._bound_context_id:
             raise BrowserBindingError("Session verification failed")
 
     def call(self, method, **params):
@@ -164,7 +189,7 @@ class Browser:
             try:
                 return browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot},
-                    call=self.call if self.browser_context_id is not None else None,
+                    call=self.call if self.browser_context_id is not None or self.bind_default_context else None,
                 )
             except StalePage:
                 if attempt == 9:
@@ -195,7 +220,8 @@ class Browser:
         if action["kind"] == "wait":
             time.sleep(0.1)
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text},
-                                    call=self.call if self.browser_context_id is not None else None)
+                                   call=(self.call if self.browser_context_id is not None or self.bind_default_context
+                                         else None))
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
@@ -209,6 +235,7 @@ class Browser:
         finally:
             self.target = None
             self.session = None
+            self._bound_context_id = None
             if self._transport is not None:
                 self._transport.close()
 

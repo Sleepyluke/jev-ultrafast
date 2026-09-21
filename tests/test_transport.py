@@ -77,14 +77,28 @@ def test_scoped_reply_requires_its_session(socket_mock, reply_session):
     socket_mock.close.assert_called_once()
 
 
-@pytest.mark.parametrize("context, endpoint", [("context", None), (None, "ws://localhost/synthetic")])
-def test_incomplete_binding_never_starts_or_connects(monkeypatch, context, endpoint):
+@pytest.mark.parametrize(
+    "context, endpoint, bind_default",
+    [
+        ("context", None, False),
+        (None, "ws://localhost/synthetic", False),
+        ("context", "ws://localhost/synthetic", True),
+        (None, None, True),
+        (None, "ws://localhost/synthetic", "yes"),
+    ],
+)
+def test_incomplete_binding_never_starts_or_connects(monkeypatch, context, endpoint, bind_default):
     connect = Mock()
     daemon = Mock()
     monkeypatch.setattr(browser, "DirectCDP", connect)
     monkeypatch.setattr(browser, "ensure_daemon", daemon)
     with pytest.raises(ValueError):
-        browser.Browser("https://example.test", browser_context_id=context, browser_ws_url=endpoint)
+        browser.Browser(
+            "https://example.test",
+            browser_context_id=context,
+            browser_ws_url=endpoint,
+            bind_default_context=bind_default,
+        )
     connect.assert_not_called()
     daemon.assert_not_called()
 

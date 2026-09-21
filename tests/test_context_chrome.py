@@ -154,3 +154,33 @@ def test_real_chrome_reclaims_context_when_creator_connection_detaches(chrome):
     while context_id in controller.call("Target.getBrowserContexts")["browserContextIds"]:
         assert time.monotonic() < deadline, "Detached context was not reclaimed"
         time.sleep(0.05)
+
+
+def test_real_chrome_checked_default_context_retains_profile_state(chrome, synthetic_site):
+    endpoint, controller = chrome
+    options = {"browser_ws_url": endpoint, "bind_default_context": True}
+    with closing(Browser(synthetic_site, **options)) as first:
+        first.evaluate("localStorage.setItem('persistent-owner','synthetic-member')")
+        first_target = first.target
+
+    with closing(Browser(synthetic_site, **options)) as reopened:
+        assert reopened.target != first_target
+        assert reopened.evaluate("localStorage.getItem('persistent-owner')") == "synthetic-member"
+
+        with IsolatedContext(endpoint) as isolated:
+            other = reopened._transport.call(
+                "Target.createTarget",
+                url=synthetic_site,
+                browserContextId=isolated.browser_options["browser_context_id"],
+            )["targetId"]
+            wrong_session = reopened._transport.call(
+                "Target.attachToTarget", targetId=other, flatten=True
+            )["sessionId"]
+            own_session = reopened.session
+            try:
+                reopened.session = wrong_session
+                with pytest.raises(BrowserBindingError):
+                    reopened.call("Input.insertText", text="must-not-type")
+            finally:
+                reopened.session = own_session
+                reopened._transport.call("Target.closeTarget", targetId=other)

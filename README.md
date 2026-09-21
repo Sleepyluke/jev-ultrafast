@@ -94,6 +94,12 @@ uv run --env-file .env python examples/run.py \
   --goal 'Find and open the Wikipedia article about Gödel’s incompleteness theorems.'
 ```
 
+This fork also supports checked bindings to caller-owned nondefault contexts and
+the default context of a trusted persistent browser profile. See
+[Explicit browser context binding](docs/context-binding.md). These checks bind
+browser traffic; account authorization and outcome verification remain the
+calling application's responsibility.
+
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
 ## Why it moves
